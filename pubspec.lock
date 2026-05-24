@@ -129,10 +129,11 @@ packages:
   flutter_bluetooth_serial:
     dependency: "direct main"
     description:
-      name: flutter_bluetooth_serial
-      sha256: "85ae82c4099b2b1facdc54e75e1bcfa88dc7f719e55dc886bb0b648cb16636b1"
-      url: "https://pub.dev"
-    source: hosted
+      path: "."
+      ref: master
+      resolved-ref: a76b5f22e81612104a8dc461705c2bba2903011a
+      url: "https://github.com/edufolly/flutter_bluetooth_serial.git"
+    source: git
     version: "0.4.0"
   flutter_launcher_icons:
     dependency: "direct dev"
@@ -260,7 +261,7 @@ packages:
     source: hosted
     version: "0.17.6"
   path:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: path
       sha256: "75cca69d1490965be98c73ceaea117e8a04dd21217b37b292c9ddbec0d955bc5"
