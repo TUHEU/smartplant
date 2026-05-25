@@ -1,23 +1,49 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'bluetooth_service.dart';
 import 'plant_data.dart';
 import 'sensor_database.dart';
 
-// ─────────────────────────────────────────────────────────────
-// ENTRY POINT
-// ─────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  ARDUINO THRESHOLDS — must match your Arduino code exactly
+// ══════════════════════════════════════════════════════════════
+const int kSoilMoistureLow = 40; // % — below this = soil dry
+const double kSoilTempHigh = 30.0; // °C — above this = soil too hot
+const double kAirTempHot = 32.0; // °C — above this = air too hot
+const int kWaterLowThresh = 15; // % — below/equal = tank empty
+
+// ══════════════════════════════════════════════════════════════
+//  ENTRY POINT
+// ══════════════════════════════════════════════════════════════
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Desktop (Windows / Linux / macOS) needs FFI-based SQLite.
-  // Android / iOS use the native sqflite path — no change needed there.
+  // Desktop SQLite init
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
+  }
+
+  // Android: request Bluetooth + Location permissions before anything else
+  if (Platform.isAndroid) {
+    final statuses = await [
+      Permission.bluetooth,
+      Permission.bluetoothConnect,
+      Permission.bluetoothScan,
+      Permission.location,
+      Permission.locationWhenInUse,
+    ].request();
+    if (kDebugMode) {
+      statuses.forEach((perm, status) {
+        print('[Permission] $perm → $status');
+      });
+    }
   }
 
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
@@ -30,99 +56,214 @@ void main() async {
   runApp(const FarmLinkApp());
 }
 
-// ─────────────────────────────────────────────────────────────
-// APP ROOT
-// ─────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  COLORS
+// ══════════════════════════════════════════════════════════════
+class K {
+  static const bg = Color(0xFF060D08);
+  static const surface = Color(0xFF0B1510);
+  static const card = Color(0xFF0F1C12);
+  static const cardHi = Color(0xFF152118);
+  static const border = Color(0xFF1A2B1E);
+  static const borderHi = Color(0xFF274035);
+
+  static const green = Color(0xFF00E676);
+  static const greenGlow = Color(0x3300E676);
+  static const teal = Color(0xFF00BCD4);
+  static const tealGlow = Color(0x2500BCD4);
+  static const amber = Color(0xFFFFB300);
+  static const amberGlow = Color(0x25FFB300);
+  static const red = Color(0xFFFF1744);
+  static const redGlow = Color(0x2EFF1744);
+  static const blue = Color(0xFF448AFF);
+  static const gold = Color(0xFFFFD600);
+  static const purple = Color(0xFFCE93D8);
+
+  static const t1 = Color(0xFFE8F5E9);
+  static const t2 = Color(0xFF81C784);
+  static const t3 = Color(0xFF2E4A32);
+  static const t4 = Color(0xFF182A1A);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  APP
+// ══════════════════════════════════════════════════════════════
 class FarmLinkApp extends StatelessWidget {
   const FarmLinkApp({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'FarmLink',
-      debugShowCheckedModeBanner: false,
-      theme: _buildTheme(),
-      home: const DashboardScreen(),
-    );
-  }
-
-  ThemeData _buildTheme() {
-    const seed = Color(0xFF3DDC84); // Android green accent
-    return ThemeData(
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'FarmLink',
+    debugShowCheckedModeBanner: false,
+    theme: ThemeData(
       brightness: Brightness.dark,
-      colorSchemeSeed: seed,
-      scaffoldBackgroundColor: const Color(0xFF0D1117),
-      fontFamily: 'monospace',
+      scaffoldBackgroundColor: K.bg,
+      colorScheme: const ColorScheme.dark(primary: K.green, surface: K.surface),
       useMaterial3: true,
-    );
-  }
+    ),
+    home: const _Splash(),
+  );
 }
 
-// ─────────────────────────────────────────────────────────────
-// COLOUR PALETTE
-// ─────────────────────────────────────────────────────────────
-class FLColors {
-  static const bg = Color(0xFF0D1117);
-  static const surface = Color(0xFF161B22);
-  static const card = Color(0xFF1C2333);
-  static const border = Color(0xFF30363D);
-  static const green = Color(0xFF3DDC84);
-  static const cyan = Color(0xFF58D5E8);
-  static const amber = Color(0xFFFFB347);
-  static const red = Color(0xFFFF5555);
-  static const blue = Color(0xFF79B8FF);
-  static const purple = Color(0xFFB392F0);
-  static const textHi = Color(0xFFE6EDF3);
-  static const textMid = Color(0xFF8B949E);
-  static const textLow = Color(0xFF484F58);
-}
-
-// ─────────────────────────────────────────────────────────────
-// DASHBOARD
-// ─────────────────────────────────────────────────────────────
-class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+// ══════════════════════════════════════════════════════════════
+//  SPLASH
+// ══════════════════════════════════════════════════════════════
+class _Splash extends StatefulWidget {
+  const _Splash();
   @override
-  State<DashboardScreen> createState() => _DashboardScreenState();
+  State<_Splash> createState() => _SplashState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen>
-    with TickerProviderStateMixin {
-  final _bt = BluetoothService();
-  final _db = SensorDatabase.instance;
-
-  PlantData _data = PlantData.initial();
-  bool _connected = false;
-  bool _connecting = false;
-  bool _manualOverride = false;
-  StreamSubscription<String>? _btSub;
-
-  // Pulse animation for the pump indicator
-  late AnimationController _pulseCtrl;
-  late Animation<double> _pulseAnim;
+class _SplashState extends State<_Splash> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  )..forward();
+  late final Animation<double> _fade = CurvedAnimation(
+    parent: _c,
+    curve: const Interval(0, .6),
+  );
+  late final Animation<double> _rise = Tween<double>(
+    begin: 48,
+    end: 0,
+  ).animate(CurvedAnimation(parent: _c, curve: Curves.easeOutCubic));
 
   @override
   void initState() {
     super.initState();
-    _pulseCtrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat(reverse: true);
-    _pulseAnim = Tween<double>(
-      begin: 0.6,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut));
+    Future.delayed(const Duration(milliseconds: 2700), () {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => const _Dashboard(),
+          transitionsBuilder: (_, a, __, c) =>
+              FadeTransition(opacity: a, child: c),
+          transitionDuration: const Duration(milliseconds: 500),
+        ),
+      );
+    });
+  }
 
-    // Prune old logs on startup
-    _db.pruneOldLogs();
-    // Start connecting
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: K.bg,
+    body: Center(
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (_, __) => FadeTransition(
+          opacity: _fade,
+          child: Transform.translate(
+            offset: Offset(0, _rise.value),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 112,
+                  height: 112,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: K.green.withOpacity(.07),
+                    border: Border.all(
+                      color: K.green.withOpacity(.35),
+                      width: 1.5,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: K.greenGlow,
+                        blurRadius: 60,
+                        spreadRadius: 12,
+                      ),
+                    ],
+                  ),
+                  child: const Center(
+                    child: Text('🌿', style: TextStyle(fontSize: 54)),
+                  ),
+                ),
+                const SizedBox(height: 32),
+                ShaderMask(
+                  shaderCallback: (b) => const LinearGradient(
+                    colors: [K.green, K.teal],
+                  ).createShader(b),
+                  child: const Text(
+                    'FARMLINK',
+                    style: TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      letterSpacing: 10,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'SMART PLANT MONITOR',
+                  style: TextStyle(fontSize: 11, color: K.t3, letterSpacing: 4),
+                ),
+                const SizedBox(height: 56),
+                SizedBox(
+                  width: 110,
+                  child: LinearProgressIndicator(
+                    backgroundColor: K.border,
+                    color: K.green,
+                    minHeight: 2,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ══════════════════════════════════════════════════════════════
+class _Dashboard extends StatefulWidget {
+  const _Dashboard();
+  @override
+  State<_Dashboard> createState() => _DashState();
+}
+
+class _DashState extends State<_Dashboard> with TickerProviderStateMixin {
+  final _bt = BluetoothService();
+  final _db = SensorDatabase.instance;
+
+  PlantData _d = PlantData.initial();
+  bool _connected = false;
+  bool _connecting = false;
+  bool _manual = false;
+  int _tab = 0;
+
+  StreamSubscription<String>? _sub;
+
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1100),
+  )..repeat(reverse: true);
+  late final AnimationController _spin = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 2),
+  )..repeat();
+
+  @override
+  void initState() {
+    super.initState();
+    _db.prune();
     _connect();
   }
 
   @override
   void dispose() {
-    _pulseCtrl.dispose();
-    _btSub?.cancel();
+    _pulse.dispose();
+    _spin.dispose();
+    _sub?.cancel();
     _bt.dispose();
     super.dispose();
   }
@@ -133,7 +274,10 @@ class _DashboardScreenState extends State<DashboardScreen>
     setState(() => _connecting = true);
     final ok = await _bt.scanAndConnect();
     if (ok) {
-      _btSub = _bt.dataStream.listen(_onData, onError: (_) => _onDisconnect());
+      _sub = _bt.dataStream.listen(
+        _onLine,
+        onError: (_) => setState(() => _connected = false),
+      );
     }
     setState(() {
       _connected = ok;
@@ -141,580 +285,1039 @@ class _DashboardScreenState extends State<DashboardScreen>
     });
     if (!ok && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not find FarmLink_BT. Is HC-05 paired?'),
-          backgroundColor: FLColors.red,
+        SnackBar(
+          content: const Text(
+            'HC-05 not found. Pair "FarmLink_BT" first in Bluetooth settings.',
+          ),
+          backgroundColor: K.red,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       );
     }
   }
 
-  void _onData(String line) {
+  void _onLine(String line) {
+    final clean = line.replaceAll('\r', '').trim();
+    if (clean.isEmpty) return;
+    if (clean.split(',').length != 8) {
+      if (kDebugMode) print('[App] Skipping malformed: "$clean"');
+      return;
+    }
     try {
-      final parsed = PlantData.fromRawString(line);
-      setState(() => _data = parsed);
-      _db.insertReading(parsed); // persist to local DB
-    } catch (_) {}
+      final p = PlantData.fromRawString(clean);
+      if (kDebugMode) print('[App] $p');
+      setState(() => _d = p);
+      _db.insert(p);
+    } catch (e) {
+      if (kDebugMode) print('[App] Parse error: $e  raw="$clean"');
+    }
   }
 
-  void _onDisconnect() {
-    setState(() => _connected = false);
+  Future<void> _togglePump(bool v) async {
+    setState(() => _manual = v);
+    await _bt.sendCommand(v ? '1' : '0');
   }
 
-  // ── PUMP CONTROL ─────────────────────────────────────────
-  Future<void> _togglePump(bool val) async {
-    setState(() => _manualOverride = val);
-    await _bt.sendCommand(val ? '1' : '0');
-  }
+  // ── DERIVED STATE (mirrors Arduino logic exactly) ────────
+  bool get _tankEmpty => _d.waterLevel <= kWaterLowThresh;
+  bool get _soilNotOpt => _d.moisture < kSoilMoistureLow;
+  bool get _soilHot => _d.soilTemp > kSoilTempHigh && _d.soilTemp != -1;
+  bool get _airHot => _d.airTemp >= kAirTempHot && _d.airTemp != -1;
+  bool get _pumpActive => _d.pumpStatus == 1;
+  bool get _motionOn => _d.motion == 1;
 
-  // ── HELPERS ──────────────────────────────────────────────
-  bool get _isTankEmpty => _data.waterLevel <= 10;
-  bool get _isPumpActive => (_data.pumpStatus == 1) || _manualOverride;
-
-  String get _systemStatus {
+  // System status mirrors exactly what Arduino decides
+  String get _statusText {
     if (!_connected) return 'DISCONNECTED';
-    if (_isTankEmpty) return 'TANK EMPTY';
-    if (_isPumpActive) return 'IRRIGATING';
-    if (_data.moisture < 30) return 'SOIL DRY';
-    return 'OPTIMAL';
+    if (_tankEmpty) return 'TANK EMPTY';
+    if (_pumpActive) return _manual ? 'MANUAL PUMP ON' : 'AUTO IRRIGATING';
+    if (_airHot) return 'AIR TOO HOT';
+    if (_soilHot) return 'SOIL TOO HOT';
+    if (_soilNotOpt) return 'SOIL DRY';
+    return 'ALL OPTIMAL';
   }
 
   Color get _statusColor {
-    if (!_connected) return FLColors.textMid;
-    if (_isTankEmpty) return FLColors.red;
-    if (_isPumpActive) return FLColors.cyan;
-    if (_data.moisture < 30) return FLColors.amber;
-    return FLColors.green;
+    if (!_connected) return K.t3;
+    if (_tankEmpty) return K.red;
+    if (_pumpActive) return K.teal;
+    if (_airHot) return K.red;
+    if (_soilHot) return K.amber;
+    if (_soilNotOpt) return K.amber;
+    return K.green;
   }
 
-  // ── BUILD ─────────────────────────────────────────────────
+  // ── BUILD ────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: FLColors.bg,
-      body: SafeArea(
-        child: CustomScrollView(
-          slivers: [
-            _buildAppBar(),
-            SliverToBoxAdapter(child: _buildStatusBanner()),
-            SliverToBoxAdapter(child: _buildPumpCard()),
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                child: Text(
-                  'LIVE SENSORS',
-                  style: TextStyle(
-                    fontSize: 11,
-                    letterSpacing: 2,
-                    color: FLColors.textMid,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ),
-            SliverPadding(
-              padding: const EdgeInsets.all(16),
-              sliver: SliverGrid(
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 12,
-                  crossAxisSpacing: 12,
-                  childAspectRatio: 1.05,
-                ),
-                delegate: SliverChildListDelegate(_buildSensorCards()),
-              ),
-            ),
-            SliverToBoxAdapter(child: _buildHistoryButton()),
-            const SliverToBoxAdapter(child: SizedBox(height: 24)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── WIDGETS ───────────────────────────────────────────────
-
-  SliverAppBar _buildAppBar() {
-    return SliverAppBar(
-      backgroundColor: FLColors.bg,
-      pinned: true,
-      elevation: 0,
-      title: Row(
+      backgroundColor: K.bg,
+      body: Stack(
         children: [
-          Container(
-            width: 28,
-            height: 28,
-            decoration: BoxDecoration(
-              color: FLColors.green.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(Icons.eco, color: FLColors.green, size: 16),
-          ),
-          const SizedBox(width: 10),
-          const Text(
-            'FARMLINK',
-            style: TextStyle(
-              color: FLColors.textHi,
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 3,
-            ),
-          ),
-        ],
-      ),
-      actions: [
-        // Connection button
-        GestureDetector(
-          onTap: _connecting ? null : (_connected ? null : _connect),
-          child: Container(
-            margin: const EdgeInsets.only(right: 16),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(
-              color: (_connected ? FLColors.green : FLColors.red).withOpacity(
-                0.12,
-              ),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: (_connected ? FLColors.green : FLColors.red).withOpacity(
-                  0.4,
+          // Ambient glow
+          Positioned(
+            top: -130,
+            right: -130,
+            child: Container(
+              width: 400,
+              height: 400,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [K.green.withOpacity(.035), Colors.transparent],
                 ),
               ),
             ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
+          ),
+          SafeArea(
+            child: Column(
               children: [
-                if (_connecting)
-                  const SizedBox(
-                    width: 10,
-                    height: 10,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 1.5,
-                      color: FLColors.amber,
-                    ),
-                  )
-                else
-                  Icon(
-                    _connected
-                        ? Icons.bluetooth_connected
-                        : Icons.bluetooth_disabled,
-                    size: 12,
-                    color: _connected ? FLColors.green : FLColors.red,
-                  ),
-                const SizedBox(width: 6),
-                Text(
-                  _connecting
-                      ? 'PAIRING…'
-                      : (_connected ? 'ONLINE' : 'OFFLINE'),
-                  style: TextStyle(
-                    fontSize: 10,
-                    letterSpacing: 1,
-                    fontWeight: FontWeight.w600,
-                    color: _connecting
-                        ? FLColors.amber
-                        : (_connected ? FLColors.green : FLColors.red),
-                  ),
+                _topBar(),
+                Expanded(
+                  child: _tab == 0 ? _dashBody() : const _HistoryScreen(),
                 ),
+                _navBar(),
               ],
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _buildStatusBanner() {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-      decoration: BoxDecoration(
-        color: FLColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _statusColor.withOpacity(0.3)),
-        boxShadow: [
-          BoxShadow(
-            color: _statusColor.withOpacity(0.08),
-            blurRadius: 20,
-            spreadRadius: 2,
-          ),
-        ],
-      ),
+  // ── TOP BAR ──────────────────────────────────────────────
+  Widget _topBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
       child: Row(
         children: [
-          AnimatedBuilder(
-            animation: _pulseAnim,
-            builder: (_, __) => Opacity(
-              opacity: _isPumpActive ? _pulseAnim.value : 1.0,
-              child: Container(
-                width: 10,
-                height: 10,
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: K.green.withOpacity(.09),
+              border: Border.all(color: K.green.withOpacity(.3)),
+              boxShadow: [BoxShadow(color: K.greenGlow, blurRadius: 20)],
+            ),
+            child: const Center(
+              child: Text('🌿', style: TextStyle(fontSize: 21)),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ShaderMask(
+                shaderCallback: (b) => const LinearGradient(
+                  colors: [K.green, K.teal],
+                ).createShader(b),
+                child: const Text(
+                  'FARMLINK',
+                  style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                    letterSpacing: 4,
+                  ),
+                ),
+              ),
+              const Text(
+                'Smart Plant Monitor',
+                style: TextStyle(fontSize: 9, color: K.t3, letterSpacing: 1),
+              ),
+            ],
+          ),
+          const Spacer(),
+          // BT status badge — tap to reconnect when offline
+          GestureDetector(
+            onTap: (!_connected && !_connecting) ? _connect : null,
+            child: AnimatedBuilder(
+              animation: _pulse,
+              builder: (_, __) => Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: _statusColor,
-                  boxShadow: [
-                    BoxShadow(
-                      color: _statusColor.withOpacity(0.6),
-                      blurRadius: 6,
+                  color: _statusColor.withOpacity(.08),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: _statusColor.withOpacity(
+                      _connecting ? .2 + .5 * _pulse.value : .35,
+                    ),
+                  ),
+                  boxShadow: _connected
+                      ? [
+                          BoxShadow(
+                            color: _statusColor.withOpacity(.1),
+                            blurRadius: 12,
+                          ),
+                        ]
+                      : [],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_connecting)
+                      RotationTransition(
+                        turns: _spin,
+                        child: const Icon(Icons.sync, size: 11, color: K.amber),
+                      )
+                    else
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _statusColor,
+                          boxShadow: [
+                            BoxShadow(
+                              color: _statusColor.withOpacity(
+                                _connected ? _pulse.value * .8 : .2,
+                              ),
+                              blurRadius: 8,
+                            ),
+                          ],
+                        ),
+                      ),
+                    const SizedBox(width: 7),
+                    Text(
+                      _connecting
+                          ? 'SCANNING…'
+                          : _connected
+                          ? 'ONLINE'
+                          : 'TAP TO CONNECT',
+                      style: TextStyle(
+                        fontSize: 9,
+                        letterSpacing: 1.2,
+                        fontWeight: FontWeight.w700,
+                        color: _connecting ? K.amber : _statusColor,
+                      ),
                     ),
                   ],
                 ),
               ),
             ),
           ),
-          const SizedBox(width: 12),
+        ],
+      ),
+    );
+  }
+
+  // ── DASHBOARD BODY ───────────────────────────────────────
+  Widget _dashBody() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+      child: Column(
+        children: [
+          _heroCard(),
+          const SizedBox(height: 14),
+          _pumpCard(),
+          const SizedBox(height: 14),
+          _alertRow(),
+          const SizedBox(height: 14),
+          _sensorGrid(),
+          const SizedBox(height: 14),
+          _motionCard(),
+        ],
+      ),
+    );
+  }
+
+  // ── HERO STATUS CARD ─────────────────────────────────────
+  Widget _heroCard() {
+    return _GlowCard(
+      accent: _statusColor,
+      child: Row(
+        children: [
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'SYSTEM STATUS',
-                  style: TextStyle(
-                    fontSize: 10,
-                    letterSpacing: 1.5,
-                    color: FLColors.textMid,
+                _lbl('SYSTEM STATUS'),
+                const SizedBox(height: 6),
+                AnimatedBuilder(
+                  animation: _pulse,
+                  builder: (_, __) => Text(
+                    _statusText,
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w900,
+                      color: _statusColor,
+                      shadows: [
+                        Shadow(
+                          color: _statusColor.withOpacity(
+                            _pumpActive ? _pulse.value * .5 : .25,
+                          ),
+                          blurRadius: 20,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  _systemStatus,
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: _statusColor,
-                    letterSpacing: 1,
-                  ),
+                const SizedBox(height: 16),
+                // Quick stats
+                Wrap(
+                  spacing: 18,
+                  children: [
+                    _qStat(
+                      '🌡',
+                      '${_d.airTemp.toStringAsFixed(1)}°C',
+                      _airHot ? K.red : K.amber,
+                    ),
+                    _qStat('💧', '${_d.airHumid.toStringAsFixed(0)}%', K.blue),
+                    _qStat('☀️', '${_d.light}%', K.gold),
+                  ],
                 ),
               ],
             ),
           ),
-          // Soil moisture quick-read
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                'SOIL',
-                style: TextStyle(
-                  fontSize: 10,
-                  color: FLColors.textMid,
-                  letterSpacing: 1,
-                ),
-              ),
-              Text(
-                '${_data.moisture}%',
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w800,
-                  color: FLColors.blue,
-                ),
-              ),
-            ],
+          const SizedBox(width: 16),
+          _MoistureRing(
+            percent: _d.moisture,
+            color: _soilNotOpt ? K.amber : K.green,
+            threshold: kSoilMoistureLow,
           ),
         ],
       ),
     );
   }
 
-  Widget _buildPumpCard() {
+  Widget _qStat(String icon, String val, Color c) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(icon, style: const TextStyle(fontSize: 14)),
+      const SizedBox(width: 4),
+      Text(
+        val,
+        style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c),
+      ),
+    ],
+  );
+
+  // ── PUMP CARD ────────────────────────────────────────────
+  Widget _pumpCard() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(22),
         gradient: LinearGradient(
-          colors: _isPumpActive
-              ? [const Color(0xFF0D2137), const Color(0xFF0B3347)]
-              : [FLColors.surface, const Color(0xFF1A2030)],
+          colors: _pumpActive
+              ? [const Color(0xFF041D28), const Color(0xFF063344)]
+              : [K.card, K.cardHi],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: _isPumpActive
-              ? FLColors.cyan.withOpacity(0.4)
-              : FLColors.border,
+          color: _pumpActive ? K.teal.withOpacity(.4) : K.border,
         ),
+        boxShadow: _pumpActive
+            ? [BoxShadow(color: K.tealGlow, blurRadius: 28)]
+            : [],
       ),
-      child: Row(
-        children: [
-          // Icon
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 400),
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              color: (_isPumpActive ? FLColors.cyan : FLColors.textLow)
-                  .withOpacity(0.15),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Icon(
-              Icons.water,
-              color: _isPumpActive ? FLColors.cyan : FLColors.textLow,
-              size: 26,
-            ),
-          ),
-          const SizedBox(width: 16),
-          // Labels
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'WATER PUMP',
-                  style: TextStyle(
-                    fontSize: 11,
-                    letterSpacing: 2,
-                    color: FLColors.textMid,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _isTankEmpty
-                      ? 'Tank empty — blocked'
-                      : _isPumpActive
-                      ? _manualOverride
-                            ? 'Manual override ON'
-                            : 'Auto-irrigating…'
-                      : 'Standby',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: _isTankEmpty
-                        ? FLColors.red
-                        : _isPumpActive
-                        ? FLColors.cyan
-                        : FLColors.textMid,
-                  ),
-                ),
-                // Tank bar
-                const SizedBox(height: 8),
-                _TankBar(percent: _data.waterLevel),
-              ],
-            ),
-          ),
-          const SizedBox(width: 16),
-          // Switch
-          Switch.adaptive(
-            value: _manualOverride,
-            onChanged: _isTankEmpty ? null : _togglePump,
-            activeColor: FLColors.cyan,
-            inactiveThumbColor: FLColors.textLow,
-          ),
-        ],
-      ),
-    );
-  }
-
-  List<Widget> _buildSensorCards() {
-    return [
-      _SensorCard(
-        label: 'SOIL MOISTURE',
-        value: '${_data.moisture}%',
-        icon: Icons.water_drop_outlined,
-        accent: FLColors.blue,
-        bar: _data.moisture / 100,
-        warn: _data.moisture < 30,
-      ),
-      _SensorCard(
-        label: 'TANK LEVEL',
-        value: '${_data.waterLevel}%',
-        icon: Icons.waves_outlined,
-        accent: FLColors.cyan,
-        bar: _data.waterLevel / 100,
-        warn: _isTankEmpty,
-      ),
-      _SensorCard(
-        label: 'AIR TEMP',
-        value: '${_data.airTemp.toStringAsFixed(1)}°C',
-        icon: Icons.thermostat_outlined,
-        accent: FLColors.amber,
-        bar: (_data.airTemp / 50).clamp(0, 1),
-        warn: _data.airTemp > 35,
-      ),
-      _SensorCard(
-        label: 'HUMIDITY',
-        value: '${_data.airHumid.toStringAsFixed(0)}%',
-        icon: Icons.cloud_outlined,
-        accent: FLColors.purple,
-        bar: _data.airHumid / 100,
-      ),
-      _SensorCard(
-        label: 'SOIL TEMP',
-        value: '${_data.soilTemp.toStringAsFixed(1)}°C',
-        icon: Icons.grass_outlined,
-        accent: FLColors.green,
-        bar: (_data.soilTemp / 50).clamp(0, 1),
-      ),
-      _SensorCard(
-        label: 'LIGHT',
-        value: '${_data.light}%',
-        icon: Icons.wb_sunny_outlined,
-        accent: const Color(0xFFFFD700),
-        bar: _data.light / 100,
-      ),
-    ];
-  }
-
-  Widget _buildHistoryButton() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-      child: OutlinedButton.icon(
-        onPressed: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const HistoryScreen()),
-        ),
-        style: OutlinedButton.styleFrom(
-          side: const BorderSide(color: FLColors.border),
-          foregroundColor: FLColors.textMid,
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-        icon: const Icon(Icons.history, size: 18),
-        label: const Text(
-          'VIEW SENSOR HISTORY',
-          style: TextStyle(letterSpacing: 1.5, fontSize: 12),
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// SENSOR CARD WIDGET
-// ─────────────────────────────────────────────────────────────
-class _SensorCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final IconData icon;
-  final Color accent;
-  final double bar;
-  final bool warn;
-
-  const _SensorCard({
-    required this.label,
-    required this.value,
-    required this.icon,
-    required this.accent,
-    required this.bar,
-    this.warn = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final displayAccent = warn ? FLColors.red : accent;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: FLColors.card,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: warn ? FLColors.red.withOpacity(0.4) : FLColors.border,
-        ),
-      ),
+      padding: const EdgeInsets.all(20),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Icon
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: displayAccent.withOpacity(0.12),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, color: displayAccent, size: 20),
-          ),
-          // Value
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 26,
-              fontWeight: FontWeight.w800,
-              color: displayAccent,
-              height: 1,
-            ),
-          ),
-          // Label + bar
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          Row(
             children: [
-              Text(
-                label,
-                style: const TextStyle(
-                  fontSize: 10,
-                  letterSpacing: 1.2,
-                  color: FLColors.textMid,
-                  fontWeight: FontWeight.w500,
+              // Animated pump icon
+              AnimatedBuilder(
+                animation: _pulse,
+                builder: (_, __) => Container(
+                  width: 58,
+                  height: 58,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(17),
+                    color: (_pumpActive ? K.teal : K.t3).withOpacity(.1),
+                    border: Border.all(
+                      color: (_pumpActive ? K.teal : K.t3).withOpacity(
+                        _pumpActive ? .25 + .35 * _pulse.value : .15,
+                      ),
+                    ),
+                    boxShadow: _pumpActive
+                        ? [
+                            BoxShadow(
+                              color: K.teal.withOpacity(_pulse.value * .3),
+                              blurRadius: 22,
+                            ),
+                          ]
+                        : [],
+                  ),
+                  child: Icon(
+                    Icons.water,
+                    color: _pumpActive ? K.teal : K.t3,
+                    size: 28,
+                  ),
                 ),
               ),
-              const SizedBox(height: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: bar.clamp(0.0, 1.0),
-                  minHeight: 4,
-                  backgroundColor: displayAccent.withOpacity(0.12),
-                  valueColor: AlwaysStoppedAnimation(displayAccent),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _lbl('WATER PUMP'),
+                    const SizedBox(height: 5),
+                    Text(
+                      _tankEmpty
+                          ? 'Tank empty — pump blocked'
+                          : _pumpActive
+                          ? (_manual
+                                ? 'Manual override active'
+                                : 'Auto-irrigating…')
+                          : 'Standby — conditions optimal',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: _tankEmpty
+                            ? K.red
+                            : _pumpActive
+                            ? K.teal
+                            : K.t2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Manual override switch
+              Column(
+                children: [
+                  _lbl('OVERRIDE'),
+                  const SizedBox(height: 4),
+                  Switch.adaptive(
+                    value: _manual,
+                    onChanged: _tankEmpty ? null : _togglePump,
+                    activeColor: K.teal,
+                    activeTrackColor: K.teal.withOpacity(.2),
+                    inactiveThumbColor: K.t3,
+                    inactiveTrackColor: K.bg,
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          // Reservoir level bar
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              _lbl('RESERVOIR LEVEL'),
+              Text(
+                '${_d.waterLevel}%',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: _tankEmpty
+                      ? K.red
+                      : _d.waterLevel < 30
+                      ? K.amber
+                      : K.teal,
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 7),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(
+                begin: 0,
+                end: (_d.waterLevel / 100).clamp(0.0, 1.0),
+              ),
+              duration: const Duration(milliseconds: 700),
+              builder: (_, v, __) => LinearProgressIndicator(
+                value: v,
+                minHeight: 9,
+                backgroundColor: K.bg,
+                valueColor: AlwaysStoppedAnimation(
+                  _tankEmpty
+                      ? K.red
+                      : _d.waterLevel < 30
+                      ? K.amber
+                      : K.teal,
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
-}
 
-// ─────────────────────────────────────────────────────────────
-// TANK BAR WIDGET
-// ─────────────────────────────────────────────────────────────
-class _TankBar extends StatelessWidget {
-  final int percent;
-  const _TankBar({required this.percent});
-
-  @override
-  Widget build(BuildContext context) {
-    final color = percent <= 10
-        ? FLColors.red
-        : percent <= 30
-        ? FLColors.amber
-        : FLColors.cyan;
+  // ── ALERT ROW: soil temp + air temp ──────────────────────
+  Widget _alertRow() {
     return Row(
       children: [
         Expanded(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: (percent / 100).clamp(0.0, 1.0),
-              minHeight: 5,
-              backgroundColor: color.withOpacity(0.12),
-              valueColor: AlwaysStoppedAnimation(color),
-            ),
+          child: _alertTile(
+            emoji: '🌱',
+            label: 'SOIL TEMP',
+            value: '${_d.soilTemp.toStringAsFixed(1)}°C',
+            sub: _soilHot
+                ? '▲ Above ${kSoilTempHigh.toStringAsFixed(0)}°C'
+                : 'Normal',
+            color: _soilHot ? K.red : K.green,
+            active: _soilHot,
           ),
         ),
-        const SizedBox(width: 8),
-        Text(
-          '$percent%',
-          style: TextStyle(
-            fontSize: 11,
-            color: color,
-            fontWeight: FontWeight.w600,
+        const SizedBox(width: 12),
+        Expanded(
+          child: _alertTile(
+            emoji: '🌬',
+            label: 'AIR TEMP',
+            value: '${_d.airTemp.toStringAsFixed(1)}°C',
+            sub: _airHot
+                ? '▲ Above ${kAirTempHot.toStringAsFixed(0)}°C'
+                : 'Normal',
+            color: _airHot ? K.red : K.amber,
+            active: _airHot,
           ),
         ),
       ],
     );
   }
+
+  Widget _alertTile({
+    required String emoji,
+    required String label,
+    required String value,
+    required String sub,
+    required Color color,
+    required bool active,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: K.card,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: active ? color.withOpacity(.4) : K.border),
+        boxShadow: active
+            ? [BoxShadow(color: color.withOpacity(.15), blurRadius: 16)]
+            : [],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(emoji, style: const TextStyle(fontSize: 18)),
+              const SizedBox(width: 8),
+              _lbl(label),
+              if (active) ...[
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(.15),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: color.withOpacity(.4)),
+                  ),
+                  child: Text(
+                    'ALERT',
+                    style: TextStyle(
+                      fontSize: 8,
+                      color: color,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+              color: color,
+              shadows: [Shadow(color: color.withOpacity(.3), blurRadius: 10)],
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            sub,
+            style: TextStyle(fontSize: 10, color: color.withOpacity(.7)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── SENSOR GRID ──────────────────────────────────────────
+  Widget _sensorGrid() {
+    final items = [
+      _SI(
+        'SOIL MOISTURE',
+        '${_d.moisture}%',
+        Icons.water_drop,
+        K.green,
+        (_d.moisture / 100).clamp(0.0, 1.0).toDouble(),
+        warn: _soilNotOpt,
+        warnLabel: 'DRY',
+      ),
+      _SI(
+        'AIR HUMIDITY',
+        '${_d.airHumid.toStringAsFixed(0)}%',
+        Icons.cloud,
+        K.blue,
+        (_d.airHumid / 100).clamp(0.0, 1.0).toDouble(),
+      ),
+      _SI(
+        'LIGHT LEVEL',
+        '${_d.light}%',
+        Icons.wb_sunny,
+        K.gold,
+        (_d.light / 100).clamp(0.0, 1.0).toDouble(),
+      ),
+      _SI(
+        'TANK LEVEL',
+        '${_d.waterLevel}%',
+        Icons.waves,
+        K.teal,
+        (_d.waterLevel / 100).clamp(0.0, 1.0).toDouble(),
+        warn: _tankEmpty,
+        warnLabel: 'EMPTY',
+      ),
+    ];
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        childAspectRatio: 1.08,
+      ),
+      itemCount: items.length,
+      itemBuilder: (_, i) => _SensorCard(info: items[i]),
+    );
+  }
+
+  // ── MOTION + BUZZER CARD ─────────────────────────────────
+  // In your Arduino: buzzer ON when motion detected
+  Widget _motionCard() {
+    return AnimatedBuilder(
+      animation: _pulse,
+      builder: (_, __) => Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: K.card,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: _motionOn ? K.amber.withOpacity(.5) : K.border,
+          ),
+          boxShadow: _motionOn
+              ? [BoxShadow(color: K.amberGlow, blurRadius: 20)]
+              : [],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                color: (_motionOn ? K.amber : K.t3).withOpacity(.1),
+                border: Border.all(
+                  color: (_motionOn ? K.amber : K.t3).withOpacity(.2),
+                ),
+              ),
+              child: Icon(
+                _motionOn ? Icons.directions_run : Icons.sensors,
+                color: _motionOn ? K.amber : K.t3,
+                size: 24,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _lbl('PIR MOTION SENSOR'),
+                  const SizedBox(height: 4),
+                  Text(
+                    _motionOn ? 'MOVEMENT DETECTED' : 'No activity',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: _motionOn ? K.amber : K.t3,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  // Show buzzer status — matches Arduino buzzer logic
+                  Row(
+                    children: [
+                      Icon(
+                        _motionOn ? Icons.volume_up : Icons.volume_off,
+                        size: 12,
+                        color: _motionOn ? K.amber : K.t3,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _motionOn
+                            ? 'Buzzer sounding on hardware'
+                            : 'Buzzer silent',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: _motionOn ? K.amber.withOpacity(.8) : K.t3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            // Pulsing dot
+            Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _motionOn ? K.amber : K.t3,
+                boxShadow: _motionOn
+                    ? [
+                        BoxShadow(
+                          color: K.amber.withOpacity(_pulse.value * .8),
+                          blurRadius: 10,
+                        ),
+                      ]
+                    : [],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── NAV BAR ──────────────────────────────────────────────
+  Widget _navBar() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+      padding: const EdgeInsets.all(5),
+      decoration: BoxDecoration(
+        color: K.card,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: K.border),
+      ),
+      child: Row(
+        children: [
+          _NavBtn(
+            Icons.dashboard_rounded,
+            'Dashboard',
+            _tab == 0,
+            () => setState(() => _tab = 0),
+          ),
+          _NavBtn(
+            Icons.history_rounded,
+            'History',
+            _tab == 1,
+            () => setState(() => _tab = 1),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _lbl(String t) => Text(
+    t,
+    style: const TextStyle(
+      fontSize: 9,
+      letterSpacing: 2,
+      color: K.t3,
+      fontWeight: FontWeight.w600,
+    ),
+  );
 }
 
-// ─────────────────────────────────────────────────────────────
-// HISTORY SCREEN
-// ─────────────────────────────────────────────────────────────
-class HistoryScreen extends StatefulWidget {
-  const HistoryScreen({super.key});
+// ══════════════════════════════════════════════════════════════
+//  GLOW CARD WRAPPER
+// ══════════════════════════════════════════════════════════════
+class _GlowCard extends StatelessWidget {
+  final Widget child;
+  final Color accent;
+  const _GlowCard({required this.child, required this.accent});
+
   @override
-  State<HistoryScreen> createState() => _HistoryScreenState();
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(20),
+    decoration: BoxDecoration(
+      color: K.card,
+      borderRadius: BorderRadius.circular(22),
+      border: Border.all(color: accent.withOpacity(.25)),
+      boxShadow: [BoxShadow(color: accent.withOpacity(.07), blurRadius: 24)],
+    ),
+    child: child,
+  );
 }
 
-class _HistoryScreenState extends State<HistoryScreen> {
+// ══════════════════════════════════════════════════════════════
+//  SENSOR CARD
+// ══════════════════════════════════════════════════════════════
+class _SI {
+  final String label, value;
+  final IconData icon;
+  final Color color;
+  final double bar;
+  final bool warn;
+  final String? warnLabel;
+  const _SI(
+    this.label,
+    this.value,
+    this.icon,
+    this.color,
+    this.bar, {
+    this.warn = false,
+    this.warnLabel,
+  });
+}
+
+class _SensorCard extends StatelessWidget {
+  final _SI info;
+  const _SensorCard({required this.info});
+
+  @override
+  Widget build(BuildContext context) {
+    final c = info.warn ? K.red : info.color;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: K.card,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: info.warn ? K.red.withOpacity(.35) : K.border,
+        ),
+        boxShadow: info.warn
+            ? [BoxShadow(color: K.redGlow, blurRadius: 14)]
+            : [],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: c.withOpacity(.1),
+                  border: Border.all(color: c.withOpacity(.2)),
+                ),
+                child: Icon(info.icon, color: c, size: 20),
+              ),
+              if (info.warn && info.warnLabel != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: K.red.withOpacity(.15),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: K.red.withOpacity(.4)),
+                  ),
+                  child: Text(
+                    info.warnLabel!,
+                    style: const TextStyle(
+                      fontSize: 8,
+                      color: K.red,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          Text(
+            info.value,
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+              color: c,
+              shadows: [Shadow(color: c.withOpacity(.3), blurRadius: 10)],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                info.label,
+                style: const TextStyle(
+                  fontSize: 9,
+                  letterSpacing: 1.5,
+                  color: K.t3,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 7),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0, end: info.bar.clamp(0.0, 1.0)),
+                  duration: const Duration(milliseconds: 700),
+                  builder: (_, v, __) => LinearProgressIndicator(
+                    value: v,
+                    minHeight: 4,
+                    backgroundColor: c.withOpacity(.1),
+                    valueColor: AlwaysStoppedAnimation(c),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  MOISTURE RING
+// ══════════════════════════════════════════════════════════════
+class _MoistureRing extends StatelessWidget {
+  final int percent;
+  final Color color;
+  final int threshold;
+  const _MoistureRing({
+    required this.percent,
+    required this.color,
+    required this.threshold,
+  });
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 90,
+    height: 90,
+    child: Stack(
+      alignment: Alignment.center,
+      children: [
+        TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0, end: percent / 100),
+          duration: const Duration(milliseconds: 900),
+          builder: (_, v, __) => CustomPaint(
+            size: const Size(90, 90),
+            painter: _RingPainter(v, color),
+          ),
+        ),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '$percent',
+              style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.w900,
+                color: color,
+                shadows: [Shadow(color: color.withOpacity(.5), blurRadius: 12)],
+              ),
+            ),
+            Text(
+              '%',
+              style: TextStyle(fontSize: 10, color: color.withOpacity(.5)),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+class _RingPainter extends CustomPainter {
+  final double v;
+  final Color c;
+  const _RingPainter(this.v, this.c);
+
+  @override
+  void paint(Canvas canvas, Size s) {
+    final ctr = Offset(s.width / 2, s.height / 2);
+    final r = s.width / 2 - 6;
+    canvas.drawCircle(
+      ctr,
+      r,
+      Paint()
+        ..color = c.withOpacity(.1)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 6,
+    );
+    canvas.drawArc(
+      Rect.fromCircle(center: ctr, radius: r),
+      -pi / 2,
+      2 * pi * v,
+      false,
+      Paint()
+        ..color = c
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 6
+        ..strokeCap = StrokeCap.round
+        ..maskFilter = const MaskFilter.blur(BlurStyle.solid, 1.5),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_RingPainter o) => o.v != v;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  NAV BUTTON
+// ══════════════════════════════════════════════════════════════
+class _NavBtn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool sel;
+  final VoidCallback onTap;
+  const _NavBtn(this.icon, this.label, this.sel, this.onTap);
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: sel ? K.green.withOpacity(.1) : Colors.transparent,
+          borderRadius: BorderRadius.circular(15),
+          border: sel ? Border.all(color: K.green.withOpacity(.25)) : null,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: sel ? K.green : K.t3, size: 22),
+            const SizedBox(height: 3),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10,
+                color: sel ? K.t2 : K.t3,
+                fontWeight: sel ? FontWeight.w700 : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+//  HISTORY SCREEN
+// ══════════════════════════════════════════════════════════════
+class _HistoryScreen extends StatefulWidget {
+  const _HistoryScreen();
+  @override
+  State<_HistoryScreen> createState() => _HistState();
+}
+
+class _HistState extends State<_HistoryScreen> {
   final _db = SensorDatabase.instance;
   List<Map<String, dynamic>> _rows = [];
   bool _loading = true;
@@ -726,140 +1329,159 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _load() async {
-    final rows = await _db.getRecentReadings(limit: 100);
+    final r = await _db.recent();
     setState(() {
-      _rows = rows;
+      _rows = r;
       _loading = false;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: FLColors.bg,
-      appBar: AppBar(
-        backgroundColor: FLColors.bg,
-        title: const Text(
-          'SENSOR HISTORY',
-          style: TextStyle(
-            color: FLColors.textHi,
-            fontSize: 14,
-            letterSpacing: 3,
-            fontWeight: FontWeight.w700,
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 14),
+          child: Row(
+            children: [
+              const Text(
+                'SENSOR LOG',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                  color: K.t1,
+                  letterSpacing: 2,
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: () async {
+                  await _db.clear();
+                  _load();
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: K.red.withOpacity(.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: K.red.withOpacity(.3)),
+                  ),
+                  child: const Text(
+                    'CLEAR',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: K.red,
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-        iconTheme: const IconThemeData(color: FLColors.textMid),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await _db.pruneOldLogs(days: 0);
-              _load();
-            },
-            child: const Text(
-              'CLEAR',
-              style: TextStyle(
-                color: FLColors.red,
-                fontSize: 11,
-                letterSpacing: 1,
-              ),
-            ),
-          ),
-        ],
-      ),
-      body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(color: FLColors.green),
-            )
-          : _rows.isEmpty
-          ? Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.history_outlined,
-                    size: 48,
-                    color: FLColors.textLow,
+        Expanded(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator(color: K.green))
+              : _rows.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('🌱', style: TextStyle(fontSize: 52)),
+                      const SizedBox(height: 14),
+                      const Text(
+                        'No readings yet',
+                        style: TextStyle(color: K.t2, fontSize: 16),
+                      ),
+                      const SizedBox(height: 6),
+                      const Text(
+                        'Connect to Arduino to start logging',
+                        style: TextStyle(color: K.t3, fontSize: 12),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'No records yet',
-                    style: TextStyle(color: FLColors.textMid),
-                  ),
-                ],
-              ),
-            )
-          : ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: _rows.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 8),
-              itemBuilder: (_, i) => _HistoryRow(row: _rows[i]),
-            ),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                  itemCount: _rows.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (_, i) => _HRow(row: _rows[i]),
+                ),
+        ),
+      ],
     );
   }
 }
 
-class _HistoryRow extends StatelessWidget {
+class _HRow extends StatelessWidget {
   final Map<String, dynamic> row;
-  const _HistoryRow({required this.row});
+  const _HRow({required this.row});
 
   @override
   Widget build(BuildContext context) {
-    final ts = DateTime.tryParse(row['timestamp'] ?? '');
-    final timeStr = ts != null
-        ? '${ts.hour.toString().padLeft(2, '0')}:${ts.minute.toString().padLeft(2, '0')}:${ts.second.toString().padLeft(2, '0')}'
+    final ts = DateTime.tryParse(row['ts'] ?? '');
+    final time = ts != null
+        ? '${ts.hour.toString().padLeft(2, '0')}:'
+              '${ts.minute.toString().padLeft(2, '0')}:'
+              '${ts.second.toString().padLeft(2, '0')}'
         : '--:--:--';
-    final dateStr = ts != null
-        ? '${ts.day.toString().padLeft(2, '0')}/${ts.month.toString().padLeft(2, '0')}'
+    final date = ts != null
+        ? '${ts.day.toString().padLeft(2, '0')}/'
+              '${ts.month.toString().padLeft(2, '0')}'
         : '';
-
-    final pump = (row['pump_status'] as int? ?? 0) == 1;
+    final moist = row['moisture'] as int? ?? 0;
+    final water = row['water_level'] as int? ?? 0;
+    final airT = (row['air_temp'] as double?)?.toStringAsFixed(1) ?? '--';
+    final soilT = (row['soil_temp'] as double?)?.toStringAsFixed(1) ?? '--';
+    final humid = (row['air_humid'] as double?)?.toStringAsFixed(0) ?? '--';
+    final pump = (row['pump'] as int? ?? 0) == 1;
+    final motion = (row['motion'] as int? ?? 0) == 1;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: FLColors.card,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: FLColors.border),
+        color: K.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: K.border),
       ),
       child: Row(
         children: [
-          // Timestamp
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                timeStr,
+                time,
                 style: const TextStyle(
                   fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  color: FLColors.textHi,
+                  fontWeight: FontWeight.w800,
+                  color: K.t1,
                 ),
               ),
-              Text(
-                dateStr,
-                style: const TextStyle(fontSize: 10, color: FLColors.textMid),
-              ),
+              Text(date, style: const TextStyle(fontSize: 10, color: K.t3)),
             ],
           ),
-          const SizedBox(width: 16),
-          const VerticalDivider(color: FLColors.border, width: 1, thickness: 1),
-          const SizedBox(width: 16),
-          // Metrics chips
+          const SizedBox(width: 10),
+          Container(width: 1, height: 38, color: K.border),
+          const SizedBox(width: 10),
           Expanded(
             child: Wrap(
-              spacing: 8,
-              runSpacing: 6,
+              spacing: 5,
+              runSpacing: 5,
               children: [
-                _Chip('💧 ${row['moisture']}%', FLColors.blue),
-                _Chip(
-                  '🌡 ${(row['air_temp'] as double?)?.toStringAsFixed(1) ?? '--'}°',
-                  FLColors.amber,
+                _chip(
+                  '💧 $moist%',
+                  moist < kSoilMoistureLow ? K.amber : K.green,
                 ),
-                _Chip('💦 ${row['water_level']}%', FLColors.cyan),
-                _Chip(
-                  pump ? '⚡ ON' : '— OFF',
-                  pump ? FLColors.cyan : FLColors.textLow,
-                ),
+                _chip('💦 $water%', water <= kWaterLowThresh ? K.red : K.teal),
+                _chip('🌡 $airT°C', K.amber),
+                _chip('🌱 $soilT°C', K.green),
+                _chip('💨 $humid%', K.blue),
+                if (motion) _chip('🏃 Motion', K.amber),
+                _chip(pump ? '⚡ Pump ON' : '— Idle', pump ? K.teal : K.t3),
               ],
             ),
           ),
@@ -867,30 +1489,17 @@ class _HistoryRow extends StatelessWidget {
       ),
     );
   }
-}
 
-class _Chip extends StatelessWidget {
-  final String text;
-  final Color color;
-  const _Chip(this.text, this.color);
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Text(
-        text,
-        style: TextStyle(
-          fontSize: 11,
-          color: color,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
+  Widget _chip(String t, Color c) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+    decoration: BoxDecoration(
+      color: c.withOpacity(.1),
+      borderRadius: BorderRadius.circular(7),
+      border: Border.all(color: c.withOpacity(.3)),
+    ),
+    child: Text(
+      t,
+      style: TextStyle(fontSize: 10, color: c, fontWeight: FontWeight.w600),
+    ),
+  );
 }

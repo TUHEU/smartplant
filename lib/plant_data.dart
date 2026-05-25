@@ -1,14 +1,14 @@
-/// PlantData — typed model for one sensor reading.
-///
-/// CSV format from Arduino (8 fields):
-/// Moisture,WaterLevel,AirTemp,AirHumid,SoilTemp,Light,Motion,PumpStatus
+import 'package:flutter/foundation.dart';
+
+/// Matches Arduino CSV exactly:
+/// moisturePercent,waterPercent,airTemp,airHumid,soilTemperature,lightPercent,motionDetected,pumpOn
 class PlantData {
-  final int moisture; // 0–100 %
-  final int waterLevel; // 0–100 %
+  final int moisture; // 0-100%
+  final int waterLevel; // 0-100%
   final double airTemp; // °C
-  final double airHumid; // 0–100 %
+  final double airHumid; // 0-100%
   final double soilTemp; // °C
-  final int light; // 0–100 %
+  final int light; // 0-100%
   final int motion; // 0 or 1
   final int pumpStatus; // 0 or 1
 
@@ -23,25 +23,40 @@ class PlantData {
     required this.pumpStatus,
   });
 
-  /// Parse the Arduino CSV string.
   factory PlantData.fromRawString(String raw) {
-    final parts = raw.trim().split(',');
+    final clean = raw.replaceAll('\r', '').trim();
+    final parts = clean.split(',');
+
+    if (kDebugMode) print('[Data] Parsing "$clean" → ${parts.length} fields');
+
     if (parts.length != 8) {
-      throw FormatException('Expected 8 fields, got ${parts.length}: "$raw"');
+      throw FormatException('Expected 8 fields, got ${parts.length}: "$clean"');
     }
+
     return PlantData(
-      moisture: int.parse(parts[0]),
-      waterLevel: int.parse(parts[1]),
-      airTemp: double.parse(parts[2]),
-      airHumid: double.parse(parts[3]),
-      soilTemp: double.parse(parts[4]),
-      light: int.parse(parts[5]),
-      motion: int.parse(parts[6]),
-      pumpStatus: int.parse(parts[7]),
+      moisture: _i(parts[0], 'moisture'),
+      waterLevel: _i(parts[1], 'waterLevel'),
+      airTemp: _d(parts[2], 'airTemp'),
+      airHumid: _d(parts[3], 'airHumid'),
+      soilTemp: _d(parts[4], 'soilTemp'),
+      light: _i(parts[5], 'light'),
+      motion: _i(parts[6], 'motion'),
+      pumpStatus: _i(parts[7], 'pumpStatus'),
     );
   }
 
-  /// Dummy / initial state so the UI has something to show before first packet.
+  static int _i(String s, String f) {
+    final v = int.tryParse(s.trim());
+    if (v == null) throw FormatException('Bad int "$s" for $f');
+    return v;
+  }
+
+  static double _d(String s, String f) {
+    final v = double.tryParse(s.trim());
+    if (v == null) throw FormatException('Bad double "$s" for $f');
+    return v;
+  }
+
   factory PlantData.initial() => const PlantData(
     moisture: 0,
     waterLevel: 0,
@@ -53,23 +68,9 @@ class PlantData {
     pumpStatus: 0,
   );
 
-  PlantData copyWith({
-    int? moisture,
-    int? waterLevel,
-    double? airTemp,
-    double? airHumid,
-    double? soilTemp,
-    int? light,
-    int? motion,
-    int? pumpStatus,
-  }) => PlantData(
-    moisture: moisture ?? this.moisture,
-    waterLevel: waterLevel ?? this.waterLevel,
-    airTemp: airTemp ?? this.airTemp,
-    airHumid: airHumid ?? this.airHumid,
-    soilTemp: soilTemp ?? this.soilTemp,
-    light: light ?? this.light,
-    motion: motion ?? this.motion,
-    pumpStatus: pumpStatus ?? this.pumpStatus,
-  );
+  @override
+  String toString() =>
+      'PlantData(moist=$moisture water=$waterLevel '
+      'airT=$airTemp humid=$airHumid soilT=$soilTemp '
+      'light=$light motion=$motion pump=$pumpStatus)';
 }

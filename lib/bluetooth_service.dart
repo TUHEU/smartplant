@@ -1,36 +1,32 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bluetooth_serial/flutter_bluetooth_serial.dart';
 
-/// BluetoothService — HC-05 Classic Bluetooth bridge.
-///
-/// Usage:
-///   final bt = BluetoothService();
-///   bool ok = await bt.scanAndConnect();
-///   bt.dataStream.listen((line) { ... });   // CSV lines from Arduino
-///   await bt.sendCommand('1');              // '1' = pump ON, '0' = pump OFF
 class BluetoothService {
   final _controller = StreamController<String>.broadcast();
   BluetoothConnection? _connection;
+  final StringBuffer _buf = StringBuffer();
 
   Stream<String> get dataStream => _controller.stream;
   bool get isConnected => _connection?.isConnected ?? false;
 
-  /// Scans bonded (paired) devices and connects to the first one matching
-  /// [nameFilter] (default 'FarmLink_BT', or the old default 'HC-05').
-  Future<bool> scanAndConnect({
-    Duration timeout = const Duration(seconds: 8),
-    String nameFilter = 'FarmLink_BT',
-  }) async {
+  Future<bool> scanAndConnect({String nameFilter = 'FarmLink_BT'}) async {
     try {
       await disconnect();
 
       List<BluetoothDevice> bonded = await FlutterBluetoothSerial.instance
           .getBondedDevices();
 
+      if (kDebugMode) {
+        print('[BT] ${bonded.length} paired device(s):');
+        for (var d in bonded) print('[BT]   ${d.name} (${d.address})');
+      }
+
       BluetoothDevice? target;
-      // Try exact name first, then fall back to 'HC-05'
+
+      // 1st pass: exact name match
       for (var d in bonded) {
         if (d.name != null &&
             d.name!.toLowerCase().contains(nameFilter.toLowerCase())) {
@@ -38,54 +34,64 @@ class BluetoothService {
           break;
         }
       }
-      // Fallback: accept any HC-05 variant
+      // 2nd pass: any HC-05
       if (target == null) {
         for (var d in bonded) {
-          if (d.name != null && d.name!.toLowerCase().contains('hc-05')) {
+          if (d.name != null &&
+              (d.name!.toLowerCase().contains('hc-05') ||
+                  d.name!.toLowerCase().contains('hc05') ||
+                  d.name!.toLowerCase().contains('farmlink'))) {
             target = d;
             break;
           }
         }
       }
+      // 3rd pass: first available
+      if (target == null && bonded.isNotEmpty) {
+        target = bonded.first;
+        if (kDebugMode) print('[BT] Fallback to first device: ${target.name}');
+      }
 
       if (target == null) {
-        if (kDebugMode) print('[BT] No matching device found');
+        if (kDebugMode) print('[BT] No device found');
         return false;
       }
 
-      if (kDebugMode) print('[BT] Connecting to ${target.name}…');
+      if (kDebugMode) print('[BT] Connecting to ${target.name}...');
       _connection = await BluetoothConnection.toAddress(target.address);
       if (kDebugMode) print('[BT] Connected!');
 
-      // Buffer for partial lines
-      final StringBuffer _buf = StringBuffer();
+      _buf.clear();
 
       _connection!.input!.listen(
         (Uint8List bytes) {
           try {
-            _buf.write(utf8.decode(bytes));
+            _buf.write(utf8.decode(bytes, allowMalformed: true));
             final raw = _buf.toString();
             final lines = raw.split('\n');
-            // All but the last element are complete lines
             for (int i = 0; i < lines.length - 1; i++) {
-              final line = lines[i].trim();
-              if (line.isNotEmpty) _controller.add(line);
+              final line = lines[i].replaceAll('\r', '').trim();
+              if (line.isNotEmpty) {
+                if (kDebugMode) print('[BT] Line: $line');
+                _controller.add(line);
+              }
             }
-            // Keep the partial last chunk in the buffer
             _buf.clear();
             _buf.write(lines.last);
           } catch (e) {
             if (kDebugMode) print('[BT] Decode error: $e');
+            _buf.clear();
           }
         },
         onDone: () {
-          if (kDebugMode) print('[BT] Connection closed by device');
+          if (kDebugMode) print('[BT] Disconnected');
           disconnect();
         },
         onError: (e) {
-          if (kDebugMode) print('[BT] Stream error: $e');
+          if (kDebugMode) print('[BT] Error: $e');
           disconnect();
         },
+        cancelOnError: false,
       );
 
       return true;
@@ -96,29 +102,29 @@ class BluetoothService {
     }
   }
 
-  /// Send a single-character command to the Arduino.
-  /// '1' = pump ON (manual override), '0' = pump OFF.
-  Future<bool> sendCommand(String text) async {
+  Future<bool> sendCommand(String cmd) async {
     if (!isConnected) return false;
     try {
-      _connection!.output.add(utf8.encode('$text\n'));
+      _connection!.output.add(utf8.encode('$cmd\n'));
       await _connection!.output.allSent;
+      if (kDebugMode) print('[BT] Sent: $cmd');
       return true;
     } catch (e) {
-      if (kDebugMode) print('[BT] Write error: $e');
+      if (kDebugMode) print('[BT] Send error: $e');
       return false;
     }
   }
 
   Future<void> disconnect() async {
     try {
-      _connection?.close();
+      await _connection?.close();
       _connection = null;
+      _buf.clear();
     } catch (_) {}
   }
 
   void dispose() {
-    _controller.close();
     disconnect();
+    _controller.close();
   }
 }
